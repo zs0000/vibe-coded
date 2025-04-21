@@ -3,6 +3,11 @@ import { loadEquippedItems, saveEquippedItems, EquippedItems } from '../systems/
 import { PlayerClassKey, PlayerClassDef, CLASS_DEFS } from '../classes/PlayerClass';
 import { InventoryManager } from '../systems/InventoryManager';
 import { InventoryUI } from '../ui/InventoryUI';
+import { BasePlayerClass } from '../classes/player/BasePlayerClass';
+import { RangerClass } from '../classes/player/RangerClass';
+import { SorceressClass } from '../classes/player/SorceressClass';
+import { ReaperClass } from '../classes/player/ReaperClass';
+import { BruteClass } from '../classes/player/BruteClass';
 
 interface Enemy extends Phaser.GameObjects.Rectangle {
   hp: number;
@@ -11,7 +16,7 @@ interface Enemy extends Phaser.GameObjects.Rectangle {
 export default class GameScene extends Phaser.Scene {
   equipped: EquippedItems;
   playerClass: PlayerClassKey;
-  classDef: PlayerClassDef;
+  playerClassObj!: BasePlayerClass;
   player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
   cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   enemies: Enemy[] = [];
@@ -43,8 +48,25 @@ export default class GameScene extends Phaser.Scene {
     this.equipped = loadEquippedItems();
     const stored = localStorage.getItem('selectedClass') as PlayerClassKey | null;
     this.playerClass = stored && CLASS_DEFS[stored] ? stored : 'Ranger';
-    this.classDef = CLASS_DEFS[this.playerClass];
+    // Use new class-based system
+    switch (this.playerClass) {
+      case 'Ranger':
+        this.playerClassObj = new RangerClass(CLASS_DEFS['Ranger']);
+        break;
+      case 'Sorceress':
+        this.playerClassObj = new SorceressClass(CLASS_DEFS['Sorceress']);
+        break;
+      case 'Reaper':
+        this.playerClassObj = new ReaperClass(CLASS_DEFS['Reaper']);
+        break;
+      case 'Brute':
+        this.playerClassObj = new BruteClass(CLASS_DEFS['Brute']);
+        break;
+      default:
+        this.playerClassObj = new RangerClass(CLASS_DEFS['Ranger']);
+    }
     this.inventoryManager = new InventoryManager();
+    this.inventoryUI = new InventoryUI(this);
   }
 
   create() {
@@ -78,14 +100,14 @@ export default class GameScene extends Phaser.Scene {
     // Player
     this.player = this.physics.add.sprite(200, this.worldHeight - 100, '')
       .setDisplaySize(32, 32)
-      .setTint(this.classDef.color);
+      .setTint(this.playerClassObj.color);
     this.player.setCollideWorldBounds(true);
     this.player.body.setGravityY(800);
     this.physics.add.collider(this.player, this.platforms);
 
     // Set player stats by class
-    this.playerHP = this.classDef.baseHP;
-    this.maxHP = this.classDef.baseHP;
+    this.playerHP = this.playerClassObj.baseHP;
+    this.maxHP = this.playerClassObj.baseHP;
 
     // Camera follow
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
@@ -96,13 +118,13 @@ export default class GameScene extends Phaser.Scene {
     this.drawHPBar();
 
     // --- HUD: Class & Skills ---
-    this.add.text(20, 48, `${this.classDef.name}`, {
+    this.add.text(20, 48, `${this.playerClassObj.name}`, {
       fontSize: '22px', color: '#fff', fontFamily: 'sans-serif', fontStyle: 'bold',
     }).setScrollFactor(0);
-    this.add.text(20, 72, `Passive: ${this.classDef.passive.name}`, {
+    this.add.text(20, 72, `Passive: ${this.playerClassObj.passive.name}`, {
       fontSize: '16px', color: '#cbd5e1', fontFamily: 'sans-serif',
     }).setScrollFactor(0);
-    this.classDef.skills.forEach((sk, i) => {
+    this.playerClassObj.skills.forEach((sk, i) => {
       this.add.text(20, 98 + i * 22, `Skill ${i+1} [${['Q','W','E'][i]}]: ${sk.name}`, {
         fontSize: '15px', color: '#fbbf24', fontFamily: 'sans-serif',
       }).setScrollFactor(0);
@@ -119,7 +141,6 @@ export default class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-E', () => this.useSkill(2));
 
     // --- Inventory UI ---
-    this.inventoryUI = new InventoryUI(this);
     this.input.keyboard.on('keydown-I', () => {
       this.inventoryUI.toggle(this.inventoryManager.getInventory());
     });
@@ -174,94 +195,9 @@ export default class GameScene extends Phaser.Scene {
   }
 
   shootProjectile(targetX: number, targetY: number) {
-    // Class-specific projectile parameters
-    let speed = 500;
-    let damage = 30;
-    let cooldown = 350;
-    let gravityY = 0;
-    let fadeDelay = 300;
-    let size = 10;
-    let tint = 0xfbbf24;
-    let isMelee = false;
-    let swingDirection = 1; // 1 = right, -1 = left
-    if (this.playerClass === 'Sorceress' || this.playerClass === 'Reaper') {
-      speed = 300;
-      damage = 60;
-      cooldown = 700;
-      fadeDelay = 600;
-      tint = this.playerClass === 'Sorceress' ? 0xf472b6 : 0x64748b;
-    } else if (this.playerClass === 'Ranger') {
-      speed = 450;
-      damage = 30;
-      cooldown = 350;
-      gravityY = 400; // Arrow drop
-      fadeDelay = 2000; // Arrow persists longer
-      tint = 0x38bdf8;
-    } else if (this.playerClass === 'Brute') {
-      isMelee = true;
-      cooldown = 500;
-      // Determine swing direction based on click position
-      swingDirection = (targetX < this.player.x) ? -1 : 1;
-    }
     this.canShoot = false;
-    if (isMelee) {
-      // Brute: melee attack (short-range arc to left or right)
-      const meleeRange = 60;
-      const meleeWidth = 80;
-      // Center the hitbox to the left or right of the player
-      const px = this.player.x + swingDirection * meleeRange;
-      const py = this.player.y;
-      const hitbox = new Phaser.Geom.Rectangle(px - meleeWidth/2, py - 30, meleeWidth, 60);
-      let hit = false;
-      this.enemies.forEach(enemy => {
-        if (Phaser.Geom.Intersects.RectangleToRectangle(hitbox, enemy.getBounds())) {
-          enemy.hp -= 45;
-          hit = true;
-          if (enemy.hp <= 0) {
-            enemy.destroy();
-            this.enemies = this.enemies.filter(en => en !== enemy);
-          }
-        }
-      });
-      // Optional: show swing effect
-      const swing = this.add.graphics();
-      swing.fillStyle(0xfbbf24, 0.4);
-      swing.fillRect(hitbox.x, hitbox.y, hitbox.width, hitbox.height);
-      this.time.delayedCall(120, () => swing.destroy());
-      // Sound or feedback could go here
-      this.time.delayedCall(cooldown, () => { this.canShoot = true; });
-      return;
-    }
-    // Projectile logic (Ranger, Sorceress, Reaper)
-    const proj = this.physics.add.sprite(this.player.x, this.player.y, '').setDisplaySize(size, size).setTint(tint);
-    proj.body.setAllowGravity(false);
-    if (gravityY) proj.body.setAllowGravity(true);
-    proj.body.setGravityY(gravityY);
-    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, targetX, targetY);
-    proj.body.setVelocity(Math.cos(angle)*speed, Math.sin(angle)*speed);
-    // Check hit
-    this.time.delayedCall(20, () => {
-      this.physics.add.overlap(proj, this.enemies as unknown as Phaser.GameObjects.GameObject[], (p, e) => {
-        const enemy = e as Enemy;
-        enemy.hp -= damage;
-        if (enemy.hp <= 0) {
-          enemy.destroy();
-          this.enemies = this.enemies.filter(en => en !== enemy);
-        }
-        proj.destroy();
-      });
-    });
-    // Ranger arrow: destroy on ground/platform collision
-    if (this.playerClass === 'Ranger') {
-      this.physics.add.collider(proj, this.platforms, () => {
-        if (proj.active) proj.destroy();
-      });
-    }
-    // Remove projectile after delay unless it's already destroyed
-    this.time.delayedCall(fadeDelay, () => {
-      if (proj.active) proj.destroy();
-    });
-    this.time.delayedCall(cooldown, () => { this.canShoot = true; });
+    this.playerClassObj.attack(targetX, targetY, this);
+    // The attack() method must handle cooldown and projectile logic.
   }
 
   spawnWave() {
@@ -325,7 +261,7 @@ export default class GameScene extends Phaser.Scene {
 
   // --- Placeholder for skill activation ---
   useSkill(idx: number) {
-    const skill = this.classDef.skills[idx];
+    const skill = this.playerClassObj.skills[idx];
     // TODO: Implement actual skill effects per class/skill
     this.add.text(240, 48 + idx * 20, `Used: ${skill.name}`, {
       fontSize: '16px', color: '#f87171', fontFamily: 'sans-serif',
